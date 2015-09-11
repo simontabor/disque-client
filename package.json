@@ -1,0 +1,30 @@
+{
+  "name": "disque-client",
+  "version": "0.0.1",
+  "description": "Disque client",
+  "main": "src/disque.js",
+  "keywords": [
+    "disque",
+    "queue",
+    "redis",
+    "cluster"
+  ],
+  "bugs": {
+    "url": "https://github.com/simontabor/disque-client/issues"
+  },
+  "author": "Simon Tabor <me@simontabor.com> (http://simontabor.com/)",
+  "license": "MIT",
+  "repository": {
+    "type" : "git",
+    "url" : "git://github.com/simontabor/disque-client.git"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "redis": "^0.12.1"
+  },
+  "optionalDependencies": {
+    "hiredis": "^0.4.0"
+  }
+}
