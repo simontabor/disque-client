@@ -1,7 +1,9 @@
-var setupCommands = require('./setupCommands');
-var redis = require('redis');
-var Events = require('events').EventEmitter;
+'use strict';
 var util = require('util');
+var Events = require('events').EventEmitter;
+var redis = require('redis');
+var setupCommands = require('./setupCommands');
+var jobCommands = require('../config/jobCommands');
 
 var Disque = module.exports = function(config) {
   var self = this;
@@ -17,12 +19,14 @@ var Disque = module.exports = function(config) {
 
   self.config = config;
   self.connections = {};
+  self.nodeList = [];
 
   for (var i = 0; i < config.servers.length; i++) {
     var c = config.servers[i];
 
     var name = c.host + ':' + c.port;
     self.connections[name] = self.getClient(c.port, c.host);
+    self.nodeList.push(self.connections[name]);
   }
 
   // fetch nodes from the cluster immediately
@@ -33,6 +37,8 @@ var Disque = module.exports = function(config) {
 };
 
 util.inherits(Disque, Events);
+
+setupCommands(Disque);
 
 Disque.prototype.getClient = function(port, host) {
   var self = this;
@@ -47,7 +53,7 @@ Disque.prototype.getClient = function(port, host) {
   cli.on('error', function(err) {
     if (/Redis connection to .* failed.*/.test(err.message)) {
       self.emit('connectionError', err, cli);
-      self.getSlots();
+      self.getNodes();
       return;
     }
 
@@ -61,12 +67,14 @@ Disque.prototype.getClient = function(port, host) {
 Disque.prototype.getRandomConnection = function(exclude) {
   var self = this;
 
-  var available = Object.keys(self.connections).filter(function(f) {
-    return f && (!exclude || exclude.indexOf(f) === -1);
-  });
+  var nodes = self.nodeList;
+  if (exclude && exclude.length) {
+    nodes = nodes.filter(function(n) {
+      return exclude.indexOf(n.address) === -1;
+    });
+  }
 
-  var randomIndex = Math.floor(Math.random() * available.length);
-  return self.connections[available[randomIndex]];
+  return nodes[Math.floor(Math.random() * nodes.length)];
 };
 
 Disque.prototype.getNodes = function(cb) {
@@ -89,33 +97,41 @@ Disque.prototype.getNodes = function(cb) {
     var client = self.getRandomConnection(exclude);
     if (!client) return runCbs(new Error('couldn\'t get nodes'));
 
-    client.send_command('cluster', [ 'nodes' ], function(err, nodes) {
+    self.client_hello(client, function(err, resp) {
       if (err) {
         // exclude this client from then next attempt
         exclude.push(client.address);
         return tryClient();
       }
 
-      nodes = nodes.split('\n').filter(Boolean);
+      var clientList = resp.slice(2);
+      var cons = {};
+      self.nodes = {};
+      self.nodeList = [];
 
-      var seenClients = [];
+      for (var i = 0; i < clientList.length; i++) {
+        var n = clientList[i];
+        var name = n[1] + ':' + n[2];
 
-      for (var i = 0; i < nodes.length; i++) {
-        var n = nodes[i].split(' ');
-        var name = n[1];
-        var cli = name.split(':');
-        seenClients.push(name);
-        self.connections[name] = self.getClient(cli[1], cli[0]);
+        var c = self.getClient(n[2], n[1]);
+        c.disque = {
+          id: n[0],
+          id_prefix: n[0].substr(0, 8),
+          priority: +n[3]
+        };
+
+        cons[name] = c;
+        self.nodes[c.disque.id_prefix] = c;
+        self.nodeList.push(c);
       }
 
       // quit now-unused clients
       for (var i in self.connections) {
-        if (!self.connections[i]) continue;
-        if (seenClients.indexOf(i) === -1) {
-          self.connections[i].quit();
-          self.connections[i] = null;
-        }
+        if (cons[i] || !self.connections[i]) continue;
+        self.connections[i].quit();
       }
+
+      self.connections = cons;
 
       runCbs(null, self.connections);
     });
@@ -124,23 +140,68 @@ Disque.prototype.getNodes = function(cb) {
   tryClient();
 };
 
-Disque.prototype.selectClient = function() {
+Disque.prototype.selectClient = function(cmd, args) {
   var self = this;
 
-  return self.getRandomConnection();
+  var cfg = jobCommands[cmd];
+  if (!cfg) return self.getRandomConnection();
+
+  var jobIDs = [];
+
+  // all job IDs
+  if (cfg[0] === 1 && !cfg[1]) {
+    jobIDs = args;
+  } else {
+    for (var i = 0; i < args.length; i += cfg[0]) {
+      jobIDs.push(args[i]);
+      if (!cfg[1]) break;
+    }
+  }
+
+  // just in case
+  if (!jobIDs.length) return self.getRandomConnection();
+
+  // quick code for if there's only 1 id
+  if (jobIDs.length === 1) {
+    var n = jobIDs[0].substr(2, 8);
+    return self.nodes[n] || self.getRandomConnection();
+  }
+
+  var popular = {};
+  for (var i = 0; i < jobIDs.length; i++) {
+    var n = jobIDs[i].substr(2, 8);
+    if (!self.nodes[n]) continue;
+    if (!popular[n]) popular[n] = 0;
+    popular[n]++;
+  }
+
+  var highestID;
+  var highestNum = 0;
+
+  for (var i in popular) {
+    if (!highestID || popular[i] > highestNum) {
+      highestID = i;
+      highestNum = popular[i];
+    }
+  }
+
+  if (!highestID) return self.getRandomConnection();
+
+  return self.nodes[highestID];
 };
 
 Disque.prototype.command = function(cmd, args, cb) {
   var self = this;
 
-  var r = self.selectClient();
-  if (!r) return cb(new Error('couldn\'t get client'));
+  var c = self.selectClient(cmd, args);
+  if (!c) return cb(new Error('couldn\'t get client'));
 
-  r.send_command(cmd, args, cb);
+  self.clientCommand(c, cmd, args, cb);
 };
 
-setupCommands(Disque);
-
+Disque.prototype.clientCommand = function(client, cmd, args, cb) {
+  client.send_command(cmd, args, cb);
+};
 
 Disque.prototype.quit = function(cb) {
   var self = this;

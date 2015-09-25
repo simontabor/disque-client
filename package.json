@@ -1,6 +1,6 @@
 {
   "name": "disque-client",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Disque client",
   "main": "src/disque.js",
   "keywords": [

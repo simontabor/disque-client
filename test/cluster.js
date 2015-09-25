@@ -20,27 +20,28 @@ var c = new Disque({
 
 
 // c.getNodes(console.log);
+//
+
+var add = function() {
+  c.addjob("queue", "body", 0, function() {
+    setTimeout(add, 5);
+  });
+};
+
+add();
+
+setInterval(function() {
+
+c.getjob("COUNT", 1000000, "FROM", "queue", function(err, jobs) {
+  // console.log(arguments);
+
+  // for (var i = 0; i < jobs.length; i++) {
+  //   c.ackjob(jobs[i][1], function(err) {
+  //     console.log(arguments);
+  //   })
+  // }
+  c.ackjob(jobs.map(function(j) { return j[1]; }), console.log);
+});
 
 
-c.addjob("queue", "body", 0, function() {
-  console.log(arguments);
-});
-c.addjob("queue", "body", 0, function() {
-  console.log(arguments);
-});
-c.addjob("queue", "body", 0, function() {
-  console.log(arguments);
-});
-c.addjob("queue", "body", 0, function() {
-  console.log(arguments);
-});
-
-c.getjob("COUNT", 5, "FROM", "queue", function(err, jobs) {
-  console.log(arguments);
-
-  for (var i = 0; i < jobs.length; i++) {
-    c.ackjob(jobs[i][1], function(err) {
-      console.log(arguments);
-    })
-  }
-});
+}, 1000);
